@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#111214">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Overlay Compare Camera</title>
+<style>
+:root{color-scheme:dark;--bg:#111214;--panel:#1b1d21;--line:#30343b;--text:#f4f4f5;--muted:#a7abb3}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100dvh}
+header{padding:14px 16px 8px;font-size:20px;font-weight:700}
+.sub{padding:0 16px 12px;color:var(--muted);font-size:13px;line-height:1.45}
+.tabs{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:0 12px 12px}
+.tabs button{padding:11px;border:1px solid var(--line);border-radius:12px;background:#23262b;color:var(--text);font-weight:700}
+.tabs button.active{background:#353941}
+.page{display:none}.page.active{display:block}
+.panel{padding:12px 14px;display:grid;gap:12px;background:var(--panel);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+label{font-size:12px;color:var(--muted);display:grid;gap:6px}
+input[type=file],select,button{width:100%;border:1px solid var(--line);border-radius:10px;background:#24272d;color:var(--text);padding:10px;font-size:14px}
+button{font-weight:600}
+.rangeRow{display:grid;grid-template-columns:80px 1fr 54px;gap:8px;align-items:center}
+.rangeRow span,output{font-size:12px;color:var(--muted)}
+output{text-align:right;font-variant-numeric:tabular-nums}
+input[type=range]{width:100%}
+.stage{position:relative;width:100%;height:56dvh;min-height:350px;overflow:hidden;background:#0b0c0e;display:flex;align-items:center;justify-content:center}
+canvas{display:block;max-width:100%;max-height:100%;touch-action:none;user-select:none;-webkit-user-select:none}
+#cameraStage video,#cameraStage #guideCanvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+#cameraStage video{background:#000}
+#guideCanvas{pointer-events:none}
+.help{position:absolute;left:10px;bottom:10px;background:rgba(0,0,0,.55);padding:7px 9px;border-radius:8px;font-size:12px;color:#ddd}
+.toolbar{padding:12px 14px;display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.note{padding:0 14px 18px;color:var(--muted);font-size:12px;line-height:1.5}
+.hidden{display:none!important}
+@media(max-width:520px){.row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>Overlay Compare Camera</header>
+<div class="sub">写真の重ね比較と、基準画像を半透明表示しながらの撮影を1つにまとめたツール。</div>
+
+<div class="tabs">
+  <button id="tabCompare" class="active">写真比較</button>
+  <button id="tabCamera">カメラ重ね撮影</button>
+</div>
+
+<section id="comparePage" class="page active">
+  <div class="panel">
+    <div class="row">
+      <label>画像A（基準）<input id="fileA" type="file" accept="image/*"></label>
+      <label>画像B（比較）<input id="fileB" type="file" accept="image/*"></label>
+    </div>
+    <div class="row">
+      <label>比較モード
+        <select id="mode">
+          <option value="source-over">通常（半透明）</option>
+          <option value="difference">Difference（差分）</option>
+          <option value="multiply">Multiply（乗算）</option>
+        </select>
+      </label>
+      <label>表示
+        <select id="visibility">
+          <option value="both">A + B</option>
+          <option value="a">Aのみ</option>
+          <option value="b">Bのみ</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="rangeRow"><span>不透明度</span><input id="opacity" type="range" min="0" max="100" value="50"><output id="opacityOut">50%</output></div>
+    <div class="rangeRow"><span>拡大縮小</span><input id="scale" type="range" min="20" max="300" value="100"><output id="scaleOut">100%</output></div>
+    <div class="rangeRow"><span>回転</span><input id="rotation" type="range" min="-180" max="180" value="0"><output id="rotationOut">0°</output></div>
+    <div class="rangeRow"><span>左右</span><input id="offsetX" type="range" min="-1500" max="1500" value="0"><output id="offsetXOut">0</output></div>
+    <div class="rangeRow"><span>上下</span><input id="offsetY" type="range" min="-1500" max="1500" value="0"><output id="offsetYOut">0</output></div>
+  </div>
+
+  <div class="stage"><canvas id="compareCanvas"></canvas><div class="help">画像B：1本指ドラッグで移動</div></div>
+
+  <div class="toolbar">
+    <button id="fitBtn">BをAに合わせる</button>
+    <button id="resetBtn">調整リセット</button>
+    <button id="swapBtn">A/B入れ替え</button>
+    <button id="blinkBtn">A/B点滅</button>
+    <button id="exportBtn">比較画像を保存</button>
+  </div>
+</section>
+
+<section id="cameraPage" class="page">
+  <div class="panel">
+    <div class="row">
+      <label>基準画像
+        <input id="guideFile" type="file" accept="image/*">
+      </label>
+      <label>カメラ
+        <select id="cameraFacing">
+          <option value="environment">背面カメラ</option>
+          <option value="user">前面カメラ</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="rangeRow"><span>基準の濃さ</span><input id="guideOpacity" type="range" min="0" max="100" value="45"><output id="guideOpacityOut">45%</output></div>
+    <div class="rangeRow"><span>拡大縮小</span><input id="guideScale" type="range" min="20" max="300" value="100"><output id="guideScaleOut">100%</output></div>
+    <div class="rangeRow"><span>回転</span><input id="guideRotation" type="range" min="-180" max="180" value="0"><output id="guideRotationOut">0°</output></div>
+    <div class="rangeRow"><span>左右</span><input id="guideX" type="range" min="-1000" max="1000" value="0"><output id="guideXOut">0</output></div>
+    <div class="rangeRow"><span>上下</span><input id="guideY" type="range" min="-1000" max="1000" value="0"><output id="guideYOut">0</output></div>
+  </div>
+
+  <div id="cameraStage" class="stage">
+    <video id="video" playsinline autoplay muted></video>
+    <canvas id="guideCanvas"></canvas>
+    <div class="help">基準画像を見ながら位置合わせして撮影</div>
+  </div>
+
+  <div class="toolbar">
+    <button id="startCameraBtn">カメラ開始</button>
+    <button id="stopCameraBtn">カメラ停止</button>
+    <button id="captureRawBtn">写真だけ保存</button>
+    <button id="captureOverlayBtn">重ねた状態を保存</button>
+    <button id="resetGuideBtn">基準画像リセット</button>
+  </div>
+
+  <div class="note">
+    カメラ機能は HTTPS 上で開く必要があります。PWAとしてホーム画面に追加すれば、Androidではかなり普通のアプリに近い使い方ができます。
+  </div>
+</section>
+
+<canvas id="captureCanvas" class="hidden"></canvas>
+
+<script>
+const $=id=>document.getElementById(id);
+
+function switchTab(which){
+  $('tabCompare').classList.toggle('active',which==='compare');
+  $('tabCamera').classList.toggle('active',which==='camera');
+  $('comparePage').classList.toggle('active',which==='compare');
+  $('cameraPage').classList.toggle('active',which==='camera');
+}
+$('tabCompare').onclick=()=>switchTab('compare');
+$('tabCamera').onclick=()=>switchTab('camera');
+
+async function loadImage(file){
+  if(!file)return null;
+  if('createImageBitmap' in window){
+    try{return await createImageBitmap(file,{imageOrientation:'from-image'});}catch(e){}
+  }
+  return await new Promise((resolve,reject)=>{
+    const img=new Image(); const u=URL.createObjectURL(file);
+    img.onload=()=>{URL.revokeObjectURL(u);resolve(img)}; img.onerror=reject; img.src=u;
+  });
+}
+const iw=i=>i?(i.width||i.naturalWidth):0, ih=i=>i?(i.height||i.naturalHeight):0;
+function saveCanvas(canvas,name){
+  canvas.toBlob(blob=>{
+    if(!blob)return;
+    const url=URL.createObjectURL(blob),a=document.createElement('a');
+    a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),30000);
+  },'image/png');
+}
+
+/* --- Compare --- */
+const cc=$('compareCanvas'),cx=cc.getContext('2d');
+let imgA=null,imgB=null,st={x:0,y:0,scale:1,rotation:0,opacity:.5},drag=false,lx=0,ly=0,blinkTimer=null,blinkState=false;
+
+function setupCompare(){
+  if(imgA){cc.width=iw(imgA);cc.height=ih(imgA)}
+  else if(imgB){cc.width=iw(imgB);cc.height=ih(imgB)}
+  else{cc.width=1200;cc.height=900}
+  renderCompare();
+}
+function drawImage(img,alpha=1,comp='source-over',tr=null){
+  if(!img)return;cx.save();cx.globalAlpha=alpha;cx.globalCompositeOperation=comp;
+  if(tr){
+    cx.translate(cc.width/2+tr.x,cc.height/2+tr.y);cx.rotate(tr.rotation*Math.PI/180);cx.scale(tr.scale,tr.scale);
+    cx.drawImage(img,-iw(img)/2,-ih(img)/2);
+  }else{
+    const s=Math.min(cc.width/iw(img),cc.height/ih(img)); const w=iw(img)*s,h=ih(img)*s;
+    cx.drawImage(img,(cc.width-w)/2,(cc.height-h)/2,w,h);
+  }cx.restore();
+}
+function renderCompare(){
+  cx.clearRect(0,0,cc.width,cc.height);
+  if(blinkTimer){blinkState?drawImage(imgA):drawImage(imgB,1,'source-over',st);return}
+  const v=$('visibility').value;
+  if((v==='both'||v==='a')&&imgA)drawImage(imgA);
+  if((v==='both'||v==='b')&&imgB)drawImage(imgB,v==='both'?st.opacity:1,v==='both'?$('mode').value:'source-over',st);
+}
+function sync(){
+  $('opacity').value=st.opacity*100;$('opacityOut').textContent=Math.round(st.opacity*100)+'%';
+  $('scale').value=st.scale*100;$('scaleOut').textContent=Math.round(st.scale*100)+'%';
+  $('rotation').value=st.rotation;$('rotationOut').textContent=st.rotation+'°';
+  $('offsetX').value=st.x;$('offsetXOut').textContent=Math.round(st.x);
+  $('offsetY').value=st.y;$('offsetYOut').textContent=Math.round(st.y);
+}
+function fitB(){
+  if(!imgA||!imgB)return;
+  st.scale=Math.min(cc.width/iw(imgB),cc.height/ih(imgB));st.x=0;st.y=0;st.rotation=0;sync();renderCompare();
+}
+$('fileA').onchange=async e=>{imgA=await loadImage(e.target.files[0]);setupCompare();if(imgB)fitB()};
+$('fileB').onchange=async e=>{imgB=await loadImage(e.target.files[0]);if(!imgA)setupCompare();fitB()};
+[['opacity','opacityOut','opacity',v=>+v/100,'%'],['scale','scaleOut','scale',v=>+v/100,'%'],
+ ['rotation','rotationOut','rotation',v=>+v,'°'],['offsetX','offsetXOut','x',v=>+v,''],['offsetY','offsetYOut','y',v=>+v,'']]
+.forEach(([id,out,key,fn,suf])=>{$(id).oninput=e=>{st[key]=fn(e.target.value);$(out).textContent=(key==='scale'?Math.round(st[key]*100):key==='opacity'?Math.round(st[key]*100):Math.round(st[key]))+suf;renderCompare()}});
+$('mode').onchange=renderCompare;$('visibility').onchange=renderCompare;
+$('fitBtn').onclick=fitB;
+$('resetBtn').onclick=()=>{st={x:0,y:0,scale:1,rotation:0,opacity:.5};sync();renderCompare()};
+$('swapBtn').onclick=()=>{[imgA,imgB]=[imgB,imgA];setupCompare();if(imgA&&imgB)fitB()};
+$('blinkBtn').onclick=()=>{
+  if(blinkTimer){clearInterval(blinkTimer);blinkTimer=null;$('blinkBtn').textContent='A/B点滅';renderCompare()}
+  else if(imgA&&imgB){blinkTimer=setInterval(()=>{blinkState=!blinkState;renderCompare()},450);$('blinkBtn').textContent='点滅停止'}
+};
+$('exportBtn').onclick=()=>{renderCompare();saveCanvas(cc,'overlay-compare.png')};
+cc.onpointerdown=e=>{if(!imgB)return;drag=true;lx=e.clientX;ly=e.clientY;cc.setPointerCapture?.(e.pointerId)};
+cc.onpointermove=e=>{if(!drag)return;const r=cc.getBoundingClientRect();st.x+=(e.clientX-lx)*cc.width/r.width;st.y+=(e.clientY-ly)*cc.height/r.height;lx=e.clientX;ly=e.clientY;sync();renderCompare()};
+cc.onpointerup=cc.onpointercancel=()=>drag=false;
+setupCompare();sync();
+
+/* --- Camera Overlay --- */
+const video=$('video'),gc=$('guideCanvas'),gx=gc.getContext('2d');
+let stream=null,guide=null,gst={x:0,y:0,scale:1,rotation:0,opacity:.45};
+
+function fitGuideCanvas(){
+  const r=$('cameraStage').getBoundingClientRect();
+  const dpr=Math.min(window.devicePixelRatio||1,2);
+  gc.width=Math.max(1,Math.round(r.width*dpr));gc.height=Math.max(1,Math.round(r.height*dpr));
+  renderGuide();
+}
+function renderGuide(){
+  gx.clearRect(0,0,gc.width,gc.height);if(!guide)return;
+  gx.save();gx.globalAlpha=gst.opacity;
+  gx.translate(gc.width/2+gst.x,gc.height/2+gst.y);gx.rotate(gst.rotation*Math.PI/180);
+  const base=Math.min(gc.width/iw(guide),gc.height/ih(guide));gx.scale(base*gst.scale,base*gst.scale);
+  gx.drawImage(guide,-iw(guide)/2,-ih(guide)/2);gx.restore();
+}
+$('guideFile').onchange=async e=>{guide=await loadImage(e.target.files[0]);gst={x:0,y:0,scale:1,rotation:0,opacity:.45};syncGuide();renderGuide()};
+function syncGuide(){
+  $('guideOpacity').value=gst.opacity*100;$('guideOpacityOut').textContent=Math.round(gst.opacity*100)+'%';
+  $('guideScale').value=gst.scale*100;$('guideScaleOut').textContent=Math.round(gst.scale*100)+'%';
+  $('guideRotation').value=gst.rotation;$('guideRotationOut').textContent=Math.round(gst.rotation)+'°';
+  $('guideX').value=gst.x;$('guideXOut').textContent=Math.round(gst.x);
+  $('guideY').value=gst.y;$('guideYOut').textContent=Math.round(gst.y);
+}
+[['guideOpacity','guideOpacityOut','opacity',v=>+v/100,'%'],['guideScale','guideScaleOut','scale',v=>+v/100,'%'],
+ ['guideRotation','guideRotationOut','rotation',v=>+v,'°'],['guideX','guideXOut','x',v=>+v,''],['guideY','guideYOut','y',v=>+v,'']]
+.forEach(([id,out,key,fn,suf])=>{$(id).oninput=e=>{gst[key]=fn(e.target.value);$(out).textContent=(key==='scale'||key==='opacity'?Math.round(gst[key]*100):Math.round(gst[key]))+suf;renderGuide()}});
+$('resetGuideBtn').onclick=()=>{gst={x:0,y:0,scale:1,rotation:0,opacity:.45};syncGuide();renderGuide()};
+
+async function startCamera(){
+  try{
+    if(stream)stream.getTracks().forEach(t=>t.stop());
+    stream=await navigator.mediaDevices.getUserMedia({
+      video:{facingMode:{ideal:$('cameraFacing').value},width:{ideal:1920},height:{ideal:1080}},
+      audio:false
+    });
+    video.srcObject=stream;await video.play();fitGuideCanvas();
+  }catch(err){alert('カメラを開始できませんでした。HTTPSで開いているか、カメラ権限を確認してください。\n\n'+err.message)}
+}
+function stopCamera(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}video.srcObject=null}
+$('startCameraBtn').onclick=startCamera;$('stopCameraBtn').onclick=stopCamera;$('cameraFacing').onchange=()=>{if(stream)startCamera()};
+
+function drawVideoCover(ctx,w,h){
+  const vw=video.videoWidth,vh=video.videoHeight;if(!vw||!vh)return false;
+  const s=Math.min(w/vw,h/vh); const dw=vw*s,dh=vh*s;
+  ctx.drawImage(video,(w-dw)/2,(h-dh)/2,dw,dh);return true;
+}
+function capture(withGuide){
+  const cap=$('captureCanvas');
+  const w=video.videoWidth||1920,h=video.videoHeight||1080;cap.width=w;cap.height=h;
+  const c=cap.getContext('2d');c.clearRect(0,0,w,h);c.drawImage(video,0,0,w,h);
+  if(withGuide&&guide){
+    c.save();c.globalAlpha=gst.opacity;c.translate(w/2+gst.x*(w/gc.width),h/2+gst.y*(h/gc.height));c.rotate(gst.rotation*Math.PI/180);
+    const base=Math.min(w/iw(guide),h/ih(guide));c.scale(base*gst.scale,base*gst.scale);c.drawImage(guide,-iw(guide)/2,-ih(guide)/2);c.restore();
+  }
+  saveCanvas(cap,withGuide?'camera-with-guide.png':'camera-photo.png');
+}
+$('captureRawBtn').onclick=()=>capture(false);$('captureOverlayBtn').onclick=()=>capture(true);
+
+window.addEventListener('resize',fitGuideCanvas);
+new ResizeObserver(fitGuideCanvas).observe($('cameraStage'));
+fitGuideCanvas();syncGuide();
+
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
+}
+</script>
+</body>
+</html>
